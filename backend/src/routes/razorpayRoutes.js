@@ -2,22 +2,21 @@ const express = require('express');
 const router = express.Router();
 
 const authMiddleware = require('../middleware/authMiddleware');
-const db = require('../data/db');
 const { v4: uuidv4 } = require('uuid');
 const { addActivity } = require('../services/activityService');
 const { createRazorpayOrder, verifyRazorpaySignature } = require('../services/paymentService');
 const { sendPaymentConfirmationEmail } = require('../services/emailService');
+const dbService = require('../services/dbService');
 
 const USD_TO_INR = 83; // static conversion rate (demo)
 
-const computePaidForInvoice = (invoiceId) => {
-  return db.payments
-    .filter((p) => p.invoiceId === invoiceId)
-    .reduce((sum, p) => sum + p.amount, 0);
+const computePaidForInvoice = async (invoiceId) => {
+  const payments = await dbService.listPaymentsByInvoice(invoiceId);
+  return payments.reduce((sum, p) => sum + p.amount, 0);
 };
 
-const updateInvoiceStatusFromPayments = (invoice) => {
-  const totalPaid = computePaidForInvoice(invoice.invoiceId);
+const updateInvoiceStatusFromPayments = async (invoice) => {
+  const totalPaid = await computePaidForInvoice(invoice.invoiceId);
   if (totalPaid <= 0) {
     invoice.status = 'UNPAID';
   } else if (totalPaid < invoice.totalAmount) {
@@ -36,12 +35,10 @@ router.post('/create-order', authMiddleware, async (req, res, next) => {
     const { invoiceId } = req.body;
     if (!invoiceId) return res.status(400).json({ message: 'invoiceId is required' });
 
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
+    const invoice = await dbService.findInvoiceById(req.user.userId, invoiceId);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
-    const totalPaid = computePaidForInvoice(invoiceId);
+    const totalPaid = await computePaidForInvoice(invoiceId);
     const remainingUsd = invoice.totalAmount - totalPaid;
     if (remainingUsd <= 0) {
       return res.status(400).json({ message: 'Invoice already fully paid' });
@@ -84,13 +81,9 @@ router.post('/verify-payment', authMiddleware, async (req, res, next) => {
       return res.status(400).json({ message: 'Missing payment verification fields' });
     }
 
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
+    const invoice = await dbService.findInvoiceById(req.user.userId, invoiceId);
     if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
-    const customer = db.customers.find(
-      (c) => c.customerId === invoice.customerId && c.userId === req.user.userId
-    );
+    const customer = await dbService.getCustomerById(req.user.userId, invoice.customerId);
 
     const isValid = verifyRazorpaySignature({
       razorpay_order_id,
@@ -104,7 +97,7 @@ router.post('/verify-payment', authMiddleware, async (req, res, next) => {
     // In a real integration, you would fetch payment details from Razorpay
     // and verify the amount/currency. Here we trust the order flow and
     // record the remaining balance in USD as paid.
-    const totalPaid = computePaidForInvoice(invoiceId);
+    const totalPaid = await computePaidForInvoice(invoiceId);
     const remainingUsd = invoice.totalAmount - totalPaid;
     if (remainingUsd <= 0) {
       return res.status(400).json({ message: 'Invoice already fully paid' });
@@ -124,9 +117,13 @@ router.post('/verify-payment', authMiddleware, async (req, res, next) => {
         razorpay_signature,
       },
     };
-    db.payments.push(payment);
+    await dbService.recordPayment(payment);
 
-    updateInvoiceStatusFromPayments(invoice);
+    await updateInvoiceStatusFromPayments(invoice);
+    await dbService.updateInvoice(invoice.invoiceId, {
+      status: invoice.status,
+      lifecycleStatus: invoice.lifecycleStatus,
+    });
 
     addActivity({
       userId: req.user.userId,
@@ -142,7 +139,7 @@ router.post('/verify-payment', authMiddleware, async (req, res, next) => {
           to: customer.email,
           invoiceId,
           paidAmount: payment.amount,
-          remainingAmount: Math.max(0, invoice.totalAmount - computePaidForInvoice(invoiceId)),
+          remainingAmount: Math.max(0, invoice.totalAmount - (await computePaidForInvoice(invoiceId))),
           status: invoice.status,
         });
         addActivity({

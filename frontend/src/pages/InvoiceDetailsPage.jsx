@@ -89,19 +89,37 @@ const InvoiceDetailsPage = () => {
               Recurring · Monthly
             </span>
           )}
-          <a
-            href={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000'}/invoice/${invoice.invoiceId}/download`}
-            className="px-3 py-1.5 rounded-md border border-slate-700 text-slate-200 hover:bg-slate-800 transition text-[11px]"
-            onClick={() =>
-              toast.push({
-                type: 'info',
-                title: 'Download started',
-                message: 'Your invoice PDF download is starting.'
-              })
-            }
-          >
-            Download invoice PDF
-          </a>
+          {invoice.pdfUrl ? (
+            <a
+              href={invoice.pdfUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 rounded-md border border-slate-700 text-slate-200 hover:bg-slate-800 transition text-[11px]"
+              onClick={() =>
+                toast.push({
+                  type: 'info',
+                  title: 'Download started',
+                  message: 'Opening invoice PDF from S3.'
+                })
+              }
+            >
+              Download invoice PDF
+            </a>
+          ) : (
+            <a
+              href={`${import.meta.env.VITE_API_BASE_URL || 'http://65.2.5.194:4003'}/invoice/${invoice.invoiceId}/download`}
+              className="px-3 py-1.5 rounded-md border border-slate-700 text-slate-200 hover:bg-slate-800 transition text-[11px]"
+              onClick={() =>
+                toast.push({
+                  type: 'info',
+                  title: 'Generating PDF',
+                  message: 'PDF missing; generating and redirecting…'
+                })
+              }
+            >
+              Generate &amp; download PDF
+            </a>
+          )}
         </div>
       </div>
 
@@ -152,4 +170,3 @@ const InvoiceDetailsPage = () => {
 };
 
 export default InvoiceDetailsPage;
-

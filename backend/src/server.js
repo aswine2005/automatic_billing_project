@@ -13,13 +13,17 @@ const razorpayRoutes = require('./routes/razorpayRoutes');
 const { sendEmail, verifySmtpConnection } = require('./services/emailService');
 
 const app = express();
+const allowedOrigins = ['http://localhost:5173'];
 
-app.use(cors());
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 
-// Serve generated PDFs (local simulation of S3/CloudFront)
-app.use('/pdfs', express.static(path.join(__dirname, '..', 'tmp-pdfs')));
+// PDFs are stored in S3; no local static serving needed
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'automated-billing-backend' });
@@ -68,11 +72,11 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`API server running on http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`API server running on http://0.0.0.0:${PORT}`);
+    console.log(`Allowed CORS origins: ${allowedOrigins.join(', ')}`);
   });
 }
 
 // Export for tests / future hosting wrappers
 module.exports = app;
-

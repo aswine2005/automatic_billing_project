@@ -1,75 +1,308 @@
-// Thin abstraction layer over the in-memory db.
-// In production, replace these with DynamoDB calls.
+const docClient = require('../config/dynamoClient');
+const {
+  PutCommand,
+  GetCommand,
+  ScanCommand,
+  UpdateCommand,
+} = require('@aws-sdk/lib-dynamodb');
 
-const db = require('../data/db');
+const TABLES = {
+  users: 'users',
+  customers: 'customers',
+  invoices: 'invoices',
+  payments: 'payments',
+};
 
-const listUserInvoices = (userId) =>
-  db.invoices.filter((inv) => inv.userId === userId);
+const safeScanAll = async (params) => {
+  const items = [];
+  let ExclusiveStartKey = undefined;
+  do {
+    const result = await docClient.send(
+      new ScanCommand({ ...params, ExclusiveStartKey })
+    );
+    if (result.Items) items.push(...result.Items);
+    ExclusiveStartKey = result.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+};
 
-const listUserPayments = (userId) =>
-  db.payments.filter((p) => p.userId === userId);
-
-const listUserCustomers = (userId) =>
-  db.customers.filter((c) => c.userId === userId);
-
-const findInvoiceById = (userId, invoiceId) =>
-  db.invoices.find((inv) => inv.userId === userId && inv.invoiceId === invoiceId);
-
-const updateInvoice = (invoice) => {
-  const idx = db.invoices.findIndex((inv) => inv.invoiceId === invoice.invoiceId);
-  if (idx !== -1) {
-    db.invoices[idx] = invoice;
+// USERS
+const createUser = async (user) => {
+  try {
+    await docClient.send(
+      new PutCommand({
+        TableName: TABLES.users,
+        Item: user,
+        ConditionExpression: 'attribute_not_exists(userId)',
+      })
+    );
+    return user;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
   }
-  return invoice;
 };
 
-const createPayment = (payment) => {
-  db.payments.push(payment);
-  return payment;
+const getUserByEmail = async (email) => {
+  try {
+    const items = await safeScanAll({
+      TableName: TABLES.users,
+      FilterExpression: '#email = :email',
+      ExpressionAttributeNames: { '#email': 'email' },
+      ExpressionAttributeValues: { ':email': email },
+    });
+    return items[0] || null;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
 };
 
-const processRecurringInvoices = (userId) => {
-  const now = new Date();
+// CUSTOMERS
+const createCustomer = async (customer) => {
+  try {
+    await docClient.send(
+      new PutCommand({
+        TableName: TABLES.customers,
+        Item: customer,
+        ConditionExpression: 'attribute_not_exists(customerId)',
+      })
+    );
+    return customer;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
 
-  db.invoices
-    .filter(
-      (inv) =>
-        inv.userId === userId &&
-        inv.isRecurring &&
-        inv.recurringInterval === 'MONTHLY' &&
-        inv.nextBillingDate &&
-        new Date(inv.nextBillingDate) <= now
-    )
-    .forEach((template) => {
+const listCustomersByUser = async (userId) => {
+  try {
+    return await safeScanAll({
+      TableName: TABLES.customers,
+      FilterExpression: '#userId = :userId',
+      ExpressionAttributeNames: { '#userId': 'userId' },
+      ExpressionAttributeValues: { ':userId': userId },
+    });
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const getCustomerById = async (userId, customerId) => {
+  try {
+    const result = await docClient.send(
+      new GetCommand({
+        TableName: TABLES.customers,
+        Key: { customerId },
+      })
+    );
+    const item = result.Item || null;
+    if (!item || item.userId !== userId) return null;
+    return item;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+// INVOICES
+const createInvoice = async (invoice) => {
+  try {
+    await docClient.send(
+      new PutCommand({
+        TableName: TABLES.invoices,
+        Item: invoice,
+        ConditionExpression: 'attribute_not_exists(invoiceId)',
+      })
+    );
+    return invoice;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const listInvoicesByUser = async (userId, status) => {
+  try {
+    const params = {
+      TableName: TABLES.invoices,
+      FilterExpression: '#userId = :userId',
+      ExpressionAttributeNames: { '#userId': 'userId' },
+      ExpressionAttributeValues: { ':userId': userId },
+    };
+    let items = await safeScanAll(params);
+    if (status) {
+      const s = String(status).toUpperCase();
+      items = items.filter((inv) => inv.status === s);
+    }
+    return items;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const findInvoiceById = async (userId, invoiceId) => {
+  try {
+    const result = await docClient.send(
+      new GetCommand({
+        TableName: TABLES.invoices,
+        Key: { invoiceId },
+      })
+    );
+    const item = result.Item || null;
+    if (!item || item.userId !== userId) return null;
+    return item;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const updateInvoice = async (invoiceId, updates) => {
+  try {
+    const names = {};
+    const values = {};
+    const sets = [];
+    Object.entries(updates).forEach(([k, v]) => {
+      names[`#${k}`] = k;
+      values[`:${k}`] = v;
+      sets.push(`#${k} = :${k}`);
+    });
+
+    const result = await docClient.send(
+      new UpdateCommand({
+        TableName: TABLES.invoices,
+        Key: { invoiceId },
+        UpdateExpression: `SET ${sets.join(', ')}`,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+        ReturnValues: 'ALL_NEW',
+      })
+    );
+    return result.Attributes;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+// PAYMENTS
+const recordPayment = async (payment) => {
+  try {
+    await docClient.send(
+      new PutCommand({
+        TableName: TABLES.payments,
+        Item: payment,
+        ConditionExpression: 'attribute_not_exists(paymentId)',
+      })
+    );
+    return payment;
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const listPaymentsByUser = async (userId) => {
+  try {
+    return await safeScanAll({
+      TableName: TABLES.payments,
+      FilterExpression: '#userId = :userId',
+      ExpressionAttributeNames: { '#userId': 'userId' },
+      ExpressionAttributeValues: { ':userId': userId },
+    });
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+const listPaymentsByInvoice = async (invoiceId) => {
+  try {
+    return await safeScanAll({
+      TableName: TABLES.payments,
+      FilterExpression: '#invoiceId = :invoiceId',
+      ExpressionAttributeNames: { '#invoiceId': 'invoiceId' },
+      ExpressionAttributeValues: { ':invoiceId': invoiceId },
+    });
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
+};
+
+// Recurring billing simulation (scan-based; for production, add GSIs)
+const processRecurringInvoices = async (userId) => {
+  try {
+    const now = new Date();
+    const templates = await safeScanAll({
+      TableName: TABLES.invoices,
+      FilterExpression:
+        '#userId = :userId AND #isRecurring = :true AND #recurringInterval = :monthly AND attribute_exists(#nextBillingDate)',
+      ExpressionAttributeNames: {
+        '#userId': 'userId',
+        '#isRecurring': 'isRecurring',
+        '#recurringInterval': 'recurringInterval',
+        '#nextBillingDate': 'nextBillingDate',
+      },
+      ExpressionAttributeValues: {
+        ':userId': userId,
+        ':true': true,
+        ':monthly': 'MONTHLY',
+      },
+    });
+
+    for (const template of templates) {
+      if (!template.nextBillingDate) continue;
+      if (new Date(template.nextBillingDate) > now) continue;
+
       const due = new Date(now);
       due.setDate(due.getDate() + 7);
+      const invoiceId = require('uuid').v4();
       const clone = {
         ...template,
-        invoiceId: require('uuid').v4(),
+        invoiceId,
         createdAt: new Date().toISOString(),
         status: 'UNPAID',
         lifecycleStatus: 'CREATED',
         dueDate: due.toISOString(),
-        // Preserve template subscription settings, but don't make child invoices generate further invoices
         isRecurring: false,
         recurringInterval: null,
         nextBillingDate: null,
       };
-      db.invoices.push(clone);
+
+      await createInvoice(clone);
 
       const next = new Date(now);
       next.setMonth(next.getMonth() + 1);
-      template.nextBillingDate = next.toISOString();
-    });
+      await updateInvoice(template.invoiceId, { nextBillingDate: next.toISOString() });
+    }
+  } catch (error) {
+    console.error('DynamoDB error:', error);
+    throw error;
+  }
 };
 
 module.exports = {
-  listUserInvoices,
-  listUserPayments,
-  listUserCustomers,
+  // users
+  createUser,
+  getUserByEmail,
+  // customers
+  createCustomer,
+  listCustomersByUser,
+  getCustomerById,
+  // invoices
+  createInvoice,
+  listInvoicesByUser,
   findInvoiceById,
   updateInvoice,
-  createPayment,
+  // payments
+  recordPayment,
+  listPaymentsByUser,
+  listPaymentsByInvoice,
+  // automation
   processRecurringInvoices,
 };
 

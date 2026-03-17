@@ -1,10 +1,8 @@
 const { v4: uuidv4 } = require('uuid');
-const db = require('../data/db');
+const dbService = require('../services/dbService');
 const { addActivity, getInvoiceActivity } = require('../services/activityService');
 const { saveInvoicePdf } = require('../services/storageService');
 const { sendReminderEmail } = require('../services/emailService');
-const path = require('path');
-const fs = require('fs');
 
 const createInvoice = async (req, res, next) => {
   try {
@@ -13,9 +11,7 @@ const createInvoice = async (req, res, next) => {
       return res.status(400).json({ message: 'customerId and at least one item are required' });
     }
 
-    const customer = db.customers.find(
-      (c) => c.customerId === customerId && c.userId === req.user.userId
-    );
+    const customer = await dbService.getCustomerById(req.user.userId, customerId);
     if (!customer) {
       return res.status(404).json({ message: 'Customer not found' });
     }
@@ -45,7 +41,7 @@ const createInvoice = async (req, res, next) => {
       createdAt: now.toISOString(),
       dueDate: due.toISOString(),
       pdfUrl: null,
-      pdfFileName: null,
+      pdfKey: null,
       isRecurring: Boolean(isRecurring),
       recurringInterval: isRecurring ? 'MONTHLY' : null,
       nextBillingDate: isRecurring
@@ -56,9 +52,9 @@ const createInvoice = async (req, res, next) => {
     // Generate PDF and store URL
     const pdf = await saveInvoicePdf({ invoice, customer });
     invoice.pdfUrl = pdf.url;
-    invoice.pdfFileName = pdf.fileName;
+    invoice.pdfKey = pdf.key;
 
-    db.invoices.push(invoice);
+    await dbService.createInvoice(invoice);
 
     addActivity({
       userId: req.user.userId,
@@ -76,13 +72,10 @@ const createInvoice = async (req, res, next) => {
 const getInvoices = (req, res, next) => {
   try {
     const { status } = req.query;
-    let invoices = db.invoices.filter((inv) => inv.userId === req.user.userId);
-
-    if (status) {
-      invoices = invoices.filter((inv) => inv.status === status.toUpperCase());
-    }
-
-    res.json(invoices);
+    dbService
+      .listInvoicesByUser(req.user.userId, status)
+      .then((invoices) => res.json(invoices))
+      .catch(next);
   } catch (err) {
     next(err);
   }
@@ -98,23 +91,20 @@ const getInvoiceActivityTimeline = (req, res, next) => {
   }
 };
 
-const sendInvoiceReminder = (req, res, next) => {
+const sendInvoiceReminder = async (req, res, next) => {
   try {
     const { invoiceId } = req.params;
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
+    const invoice = await dbService.findInvoiceById(req.user.userId, invoiceId);
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
     invoice.lifecycleStatus = 'SENT';
-    const customer = db.customers.find(
-      (c) => c.customerId === invoice.customerId && c.userId === req.user.userId
-    );
-    const paid = db.payments
-      .filter((p) => p.invoiceId === invoiceId)
-      .reduce((sum, p) => sum + p.amount, 0);
+    await dbService.updateInvoice(invoice.invoiceId, { lifecycleStatus: 'SENT' });
+
+    const customer = await dbService.getCustomerById(req.user.userId, invoice.customerId);
+    const payments = await dbService.listPaymentsByInvoice(invoiceId);
+    const paid = payments.reduce((sum, p) => sum + p.amount, 0);
     const remaining = Math.max(0, invoice.totalAmount - paid);
 
     addActivity({
@@ -158,29 +148,23 @@ const sendInvoiceReminder = (req, res, next) => {
 const downloadInvoicePdf = (req, res, next) => {
   try {
     const { invoiceId } = req.params;
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
-    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+    return dbService
+      .findInvoiceById(req.user.userId, invoiceId)
+      .then(async (invoice) => {
+        if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
-    const fileName = invoice.pdfFileName || `invoice-${invoiceId}.pdf`;
-    const filePath = path.join(__dirname, '..', '..', 'tmp-pdfs', fileName);
-
-    // Generate on demand if missing
-    if (!fs.existsSync(filePath)) {
-      const customer = db.customers.find(
-        (c) => c.customerId === invoice.customerId && c.userId === req.user.userId
-      );
-      return saveInvoicePdf({ invoice, customer })
-        .then((pdf) => {
+        // If missing, generate on-demand and persist the S3 URL.
+        if (!invoice.pdfUrl) {
+          const customer = await dbService.getCustomerById(req.user.userId, invoice.customerId);
+          const pdf = await saveInvoicePdf({ invoice, customer });
           invoice.pdfUrl = pdf.url;
-          invoice.pdfFileName = pdf.fileName;
-          return res.download(pdf.filePath, pdf.fileName);
-        })
-        .catch((e) => next(e));
-    }
+          invoice.pdfKey = pdf.key;
+          await dbService.updateInvoice(invoice.invoiceId, { pdfUrl: pdf.url, pdfKey: pdf.key });
+        }
 
-    return res.download(filePath, fileName);
+        return res.redirect(invoice.pdfUrl);
+      })
+      .catch(next);
   } catch (err) {
     next(err);
   }

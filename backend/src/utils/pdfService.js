@@ -1,20 +1,11 @@
-const fs = require('fs');
-const path = require('path');
 const PDFDocument = require('pdfkit');
+const s3 = require('../config/s3Client');
+const { PutObjectCommand } = require('@aws-sdk/client-s3');
 
-// Simulates S3 by saving PDFs to local /tmp-like folder and returning a URL-ish path.
-const generateInvoicePdf = async (invoice, customer) => {
-  const docsDir = path.join(__dirname, '..', '..', 'tmp-pdfs');
-  if (!fs.existsSync(docsDir)) {
-    fs.mkdirSync(docsDir, { recursive: true });
-  }
-
-  const fileName = `invoice-${invoice.invoiceId}.pdf`;
-  const filePath = path.join(docsDir, fileName);
-
+const createInvoicePdfBuffer = async (invoice, customer) => {
   const doc = new PDFDocument({ size: 'A4', margin: 50 });
-  const stream = fs.createWriteStream(filePath);
-  doc.pipe(stream);
+  const chunks = [];
+  doc.on('data', (d) => chunks.push(d));
 
   // Header
   doc
@@ -132,15 +123,40 @@ const generateInvoicePdf = async (invoice, customer) => {
 
   doc.end();
 
-  await new Promise((resolve, reject) => {
-    stream.on('finish', resolve);
-    stream.on('error', reject);
+  const pdfBuffer = await new Promise((resolve, reject) => {
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
   });
 
-  console.log('PDF generated at:', filePath);
+  return pdfBuffer;
+};
 
-  // In real S3, this would be an S3 URL. For local dev, serve from /pdfs.
-  return { fileName, filePath, url: `/pdfs/${fileName}` };
+// Upload PDF to S3 and return public URL
+const generateInvoicePdf = async (invoice, customer) => {
+  const bucket = process.env.S3_BUCKET_NAME;
+  const region = process.env.AWS_REGION;
+  if (!bucket || !region) {
+    const err = new Error('S3_BUCKET_NAME and AWS_REGION must be set');
+    err.status = 500;
+    throw err;
+  }
+
+  const pdfBuffer = await createInvoicePdfBuffer(invoice, customer);
+  const key = `invoices/${invoice.invoiceId}.pdf`;
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: pdfBuffer,
+      ContentType: 'application/pdf',
+    })
+  );
+
+  const url = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+  console.log('PDF uploaded to S3:', { bucket, key, url });
+
+  return { key, url };
 };
 
 module.exports = {

@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const db = require('../data/db');
+const dbService = require('../services/dbService');
 
 const signup = async (req, res, next) => {
   try {
@@ -10,7 +10,7 @@ const signup = async (req, res, next) => {
       return res.status(400).json({ message: 'Name, email and password are required' });
     }
 
-    const existing = db.users.find((u) => u.email === email);
+    const existing = await dbService.getUserByEmail(email);
     if (existing) {
       return res.status(400).json({ message: 'User already exists' });
     }
@@ -24,7 +24,7 @@ const signup = async (req, res, next) => {
       createdAt: new Date().toISOString(),
     };
 
-    db.users.push(user);
+    await dbService.createUser(user);
 
     const token = jwt.sign(
       { userId: user.userId, email: user.email },
@@ -48,7 +48,7 @@ const login = async (req, res, next) => {
       return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    const user = db.users.find((u) => u.email === email);
+    const user = await dbService.getUserByEmail(email);
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }

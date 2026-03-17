@@ -1,15 +1,14 @@
 const { v4: uuidv4 } = require('uuid');
-const db = require('../data/db');
+const dbService = require('../services/dbService');
 const { addActivity } = require('../services/activityService');
 
-const computePaidForInvoice = (invoiceId) => {
-  return db.payments
-    .filter((p) => p.invoiceId === invoiceId)
-    .reduce((sum, p) => sum + p.amount, 0);
+const computePaidForInvoice = async (invoiceId) => {
+  const payments = await dbService.listPaymentsByInvoice(invoiceId);
+  return payments.reduce((sum, p) => sum + p.amount, 0);
 };
 
-const updateInvoiceStatusFromPayments = (invoice) => {
-  const totalPaid = computePaidForInvoice(invoice.invoiceId);
+const updateInvoiceStatusFromPayments = async (invoice) => {
+  const totalPaid = await computePaidForInvoice(invoice.invoiceId);
   if (totalPaid <= 0) {
     invoice.status = 'UNPAID';
   } else if (totalPaid < invoice.totalAmount) {
@@ -21,21 +20,19 @@ const updateInvoiceStatusFromPayments = (invoice) => {
   return { totalPaid };
 };
 
-const createPayment = (req, res, next) => {
+const createPayment = async (req, res, next) => {
   try {
     const { invoiceId, amount, paymentDate } = req.body;
     if (!invoiceId || amount == null) {
       return res.status(400).json({ message: 'invoiceId and amount are required' });
     }
 
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
+    const invoice = await dbService.findInvoiceById(req.user.userId, invoiceId);
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
-    const existingPaid = computePaidForInvoice(invoiceId);
+    const existingPaid = await computePaidForInvoice(invoiceId);
     const remaining = invoice.totalAmount - existingPaid;
     const amt = Number(amount);
     if (amt <= 0) {
@@ -54,9 +51,13 @@ const createPayment = (req, res, next) => {
       createdAt: new Date().toISOString(),
     };
 
-    db.payments.push(payment);
+    await dbService.recordPayment(payment);
 
-    updateInvoiceStatusFromPayments(invoice);
+    await updateInvoiceStatusFromPayments(invoice);
+    await dbService.updateInvoice(invoice.invoiceId, {
+      status: invoice.status,
+      lifecycleStatus: invoice.lifecycleStatus,
+    });
 
     addActivity({
       userId: req.user.userId,
@@ -71,30 +72,28 @@ const createPayment = (req, res, next) => {
   }
 };
 
-const getPayments = (req, res, next) => {
+const getPayments = async (req, res, next) => {
   try {
-    const payments = db.payments.filter((p) => p.userId === req.user.userId);
+    const payments = await dbService.listPaymentsByUser(req.user.userId);
     res.json(payments);
   } catch (err) {
     next(err);
   }
 };
 
-const simulatePayment = (req, res, next) => {
+const simulatePayment = async (req, res, next) => {
   try {
     const { invoiceId } = req.body;
     if (!invoiceId) {
       return res.status(400).json({ message: 'invoiceId is required' });
     }
 
-    const invoice = db.invoices.find(
-      (inv) => inv.invoiceId === invoiceId && inv.userId === req.user.userId
-    );
+    const invoice = await dbService.findInvoiceById(req.user.userId, invoiceId);
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
-    const totalPaid = computePaidForInvoice(invoiceId);
+    const totalPaid = await computePaidForInvoice(invoiceId);
 
     const remaining = invoice.totalAmount - totalPaid;
     if (remaining <= 0) {
@@ -110,9 +109,13 @@ const simulatePayment = (req, res, next) => {
       createdAt: new Date().toISOString(),
     };
 
-    db.payments.push(payment);
+    await dbService.recordPayment(payment);
 
-    updateInvoiceStatusFromPayments(invoice);
+    await updateInvoiceStatusFromPayments(invoice);
+    await dbService.updateInvoice(invoice.invoiceId, {
+      status: invoice.status,
+      lifecycleStatus: invoice.lifecycleStatus,
+    });
 
     addActivity({
       userId: req.user.userId,

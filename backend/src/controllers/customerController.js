@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
-const db = require('../data/db');
+const dbService = require('../services/dbService');
 
-const createCustomer = (req, res, next) => {
+const createCustomer = async (req, res, next) => {
   try {
     const { name, email, phone } = req.body;
     if (!name || !email) {
@@ -17,17 +17,17 @@ const createCustomer = (req, res, next) => {
       createdAt: new Date().toISOString(),
     };
 
-    db.customers.push(customer);
+    await dbService.createCustomer(customer);
     res.status(201).json(customer);
   } catch (err) {
     next(err);
   }
 };
 
-const getCustomers = (req, res, next) => {
+const getCustomers = async (req, res, next) => {
   try {
     const { search } = req.query;
-    let customers = db.customers.filter((c) => c.userId === req.user.userId);
+    let customers = await dbService.listCustomersByUser(req.user.userId);
 
     if (search) {
       const term = search.toLowerCase();

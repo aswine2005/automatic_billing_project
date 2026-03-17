@@ -103,8 +103,10 @@ const InvoicesPage = () => {
       render: (row) =>
         row.pdfUrl ? (
           <a
-            href={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000'}${row.pdfUrl}`}
+            href={row.pdfUrl}
             className="text-[11px] text-indigo-300 hover:text-indigo-200 underline"
+            target="_blank"
+            rel="noreferrer"
           >
             Download
           </a>
