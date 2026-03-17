@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { getToken, clearToken } from './auth';
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://65.2.5.194:4003';
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
 
 console.log('API BASE URL:', apiBaseUrl);
 
